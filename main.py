@@ -4,6 +4,7 @@ Fill me in later.
 """
 
 import logging
+import os
 import uuid
 
 from datetime import datetime, timedelta
@@ -15,6 +16,8 @@ from fastapi.testclient import TestClient
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from pydantic import BaseModel, ValidationError
+
+import requests
 
 
 # Crypt things. THese are all demo values.
@@ -169,6 +172,25 @@ async def get_current_user(security_scopes: SecurityScopes, token: Annotated[str
     except (JWTError, ValidationError):
         raise credentials_exception
 
+    # TODO: If user is dns-updater, go down a different flow.
+    if token_data.username == "dns-updater":
+        print(token_data.scopes)
+        dns_updater_scope_found = False
+        for scope in token_data.scopes:
+            if "dns-updater:" in scope:
+                dns_updater_scope_found = True
+                break
+
+        if dns_updater_scope_found:
+            # Super duper cheap hack. Let's fix it in the future with a proper class/model.
+            return UserInDB(username="dns-updater", hashed_password="doesnotexist")
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Not enough permissions (dns-updater)",
+                headers={"WWW-Authenticate": authenticate_value}
+            )
+
     user = get_user(fake_users_db, username=token_data.username)
 
     if user is None:
@@ -197,14 +219,6 @@ async def get_current_active_user(
         raise HTTPException(status_code=400, detail="Inactive user")
     return current_user
 
-
-class TokenId(BaseModel):
-    """"
-    TODO
-    """
-    host: str
-    id: str
-    token: str
 
 class TokenRequest(BaseModel):
     """
@@ -261,9 +275,10 @@ async def get_own_items(current_user: Annotated[User, Security(get_current_activ
 @app.post("/dns/token", response_model=Token)
 async def get_dns_token(request: Annotated[TokenRequest, Depends()], current_user: Annotated[User, Security(get_current_active_user, scopes=["request-dns-token"])]):
 #async def get_dns_token(request: TokenRequest, current_user: Annotated[User, Security(get_current_active_user, scopes=["request-dns-token"])]):
-    print(f"Request: {request}")
-    print(f"current_user: {current_user}")
-
+    """
+    Given a valid incoming token, provide a token back that allows updating
+    the DNS record for the specified host.
+    """
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
         data={"sub": "dns-updater", "scopes": [f"dns-updater:{request.host}"]}, expires_delta=access_token_expires
@@ -272,36 +287,43 @@ async def get_dns_token(request: Annotated[TokenRequest, Depends()], current_use
     return {"access_token": access_token, "token_type": "bearer"}
 
 
-@app.post("/tokens")
-async def create_token(request: TokenRequest):
-    """
-    TODO
-    """
-    logging.info(f"Creating a token for {request.host}")
+# TODO: We should not use get_current_active_user. We should make our own flow. Cheap hack for now because it is getting late and I want to see this somewhat work.
+@app.put("/dns/update")
+async def put_dns_record(ipv6: str, current_token: Annotated[str, Security(get_current_active_user, scopes=["hi"])]):
+    print(ipv6)
+    print(current_token)
+    CF_TOKEN = os.environ.get("CF_TOKEN")
+    CF_ZONE_ID = os.environ.get("CF_ZONE_ID")
 
-    new_token_id = str(uuid.uuid4())
+    cf_endpoint = f"https://api.cloudflare.com/client/v4/zones/{CF_ZONE_ID}/dns_records"
 
-    # This is a holder. We need to actually do all the hashing and whatnot.
-    # Also it won't be a uuid in the end state. It will be a jwt as we want to
-    # use short lived tokens.
-    new_token = str(uuid.uuid4())
+    headers = {
+        "Authorization": f"Bearer {CF_TOKEN}",
+        "Content-Type": "application/json"
+    }
 
-    new_token = TokenId(
-        host = request.host,
-        id = new_token_id,
-        token = new_token,
-    )
+    new_record_data = {
+        "content": "fd73:6172:6168:a10::1",
+        "name": "stinky2.my.tld",
+        "proxied": False,
+        "type": "AAAA",
+        "comment": "dns-api",
+        "ttl": 120
+    }
 
-    logging.debug(f"New Token: {new_token}")
+    response = requests.post(cf_endpoint, json=new_record_data, headers=headers)
 
-    # Search DB for duplicate ID
-    # Write to DB
-    mock_db[new_token.id] = new_token
+    print(response.content)
 
-    # Handle errors
+    if response.status_code == 201:
+        print("Worked")
+    else:
+        print("Fart")
 
-    return {"message": "success"}
+    # We have to also perform a check if it exist already, because then it is a PUT.
+    # For tomorrow...
 
+    return "Hi"
 
 
 # Tests
