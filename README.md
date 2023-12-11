@@ -1,5 +1,7 @@
 # dns-api
 
+The bulk of this code follows the FastAPI guide and modified where need be.
+
 ## Problems/Scope
 
 * Dynamically updating DNS when a new host comes online.
@@ -18,6 +20,8 @@
 ## TODO
 
 * Better logging
+* Filter out unknown scopes
+* Filter out allowed scopes on what is allowed to be asked for
 
 ## Design
 
