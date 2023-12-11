@@ -30,3 +30,9 @@
     * Hostname record
 
 * Store the data in a DB (sqlite?)
+
+* User auth in with user/password
+  --> Gets jwt with a scope to be able to make new update-record tokens
+  --> Take jwt and request a new update-record token
+  --> update-record token is then placed into VM
+  --> On launch of new VM, use jwt to update dns record

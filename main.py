@@ -9,12 +9,12 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, HTTPException, status
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from fastapi import Depends, FastAPI, HTTPException, Security, status
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm, SecurityScopes
 from fastapi.testclient import TestClient
 from jose import JWTError, jwt
 from passlib.context import CryptContext
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 
 # Crypt things. THese are all demo values.
@@ -32,7 +32,10 @@ logging.basicConfig(
 
 # Set up FastAPI app and other aux things.
 app = FastAPI()
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+oauth2_scheme = OAuth2PasswordBearer(
+    tokenUrl="token",
+    scopes={"me": "Read information about the current user.", "request-dns-token": "Allows requesting a token for DNS updates."}
+)
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
@@ -62,8 +65,9 @@ class Token(BaseModel):
 
 class TokenData(BaseModel):
     """
-    TODO: Dig more.
+    Model describing the exact shape of scopes and username.
     """
+    scopes: list[str] = []
     username: str | None = None
 
 
@@ -134,10 +138,15 @@ def create_access_token(data: dict, expires_delta: timedelta | None = None):
     return encoded_jwt
 
 
-async def get_current_user(token: Annotated[str, Depends(oauth2_scheme)]):
+async def get_current_user(security_scopes: SecurityScopes, token: Annotated[str, Depends(oauth2_scheme)]):
     """
     Figures out if the current token is valid. If so, return a UserInDB object.
     """
+    if security_scopes.scopes:
+        authenticate_value = f'Bearer scope="{security_scopes.scope_str}"'
+    else:
+        authenticate_value = "Bearer"
+
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
@@ -149,17 +158,31 @@ async def get_current_user(token: Annotated[str, Depends(oauth2_scheme)]):
         username: str = payload.get("sub")
         if username is None:
             raise credentials_exception
-        token_data = TokenData(username=username)
-    except JWTError:
+
+        token_scopes = payload.get("scopes", [])
+        token_data = TokenData(scopes=token_scopes, username=username)
+
+    except (JWTError, ValidationError):
         raise credentials_exception
+
     user = get_user(fake_users_db, username=token_data.username)
+
     if user is None:
         raise credentials_exception
+
+    for scope in security_scopes.scopes:
+        if scope not in token_data.scopes:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Not enough permissions",
+                headers={"WWW-Authenticate": authenticate_value}
+            )
+
     return user
 
 
 async def get_current_active_user(
-    current_user: Annotated[User, Depends(get_current_user)]):
+    current_user: Annotated[User, Security(get_current_user, scopes=["me"])]):
     """
     Figures out if the current user is disabled or not.
 
@@ -211,7 +234,7 @@ async def login_for_access_token(
 
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
-        data={"sub": user.username}, expires_delta=access_token_expires
+        data={"sub": user.username, "scopes": form_data.scopes}, expires_delta=access_token_expires
     )
 
     return {"access_token": access_token, "token_type": "bearer"}
@@ -261,6 +284,11 @@ async def get_users_me(current_user: Annotated[User, Depends(get_current_active_
     Return data about ourself.
     """
     return current_user
+
+
+@app.get("/users/me/items/")
+async def get_own_items(current_user: Annotated[User, Security(get_current_active_user, scopes=["request-dns-token"])]):
+    return [{"item_id": "Foo", "owner": current_user.username}]
 
 
 # Tests
