@@ -1,0 +1,9 @@
+coverage
+fastapi
+httpx
+passlib[bcrypt]
+pylint
+pytest
+python-jose[cryptography]
+python-multipart
+uvicorn[standard]
