@@ -10,12 +10,12 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, HTTPException, Security, status
+from fastapi import Body, Depends, FastAPI, HTTPException, Security, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm, SecurityScopes
 from fastapi.testclient import TestClient
 from jose import JWTError, jwt
 from passlib.context import CryptContext
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, Field, ValidationError
 
 import requests
 
@@ -25,6 +25,11 @@ import requests
 SECRET_KEY = "09d25e094faa6ca2556c818166b7a9563b93f7099f6f0f4caa6cf63b88e8d3e7"
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
+
+# Others
+DNS_UPDATER_SCOPE_NAME = "dns-updater"
+DNS_UPDATER_USERNAME = "dns-updater"
+REQUEST_DNS_TOKEN_SCOPE = "request-dns-token"
 
 # Configure Logging
 logging.basicConfig(
@@ -145,6 +150,63 @@ def create_access_token(data: dict, expires_delta: timedelta | None = None):
     return encoded_jwt
 
 
+class DnsUpdater(BaseModel):
+    """
+    This model describes a DnsUpdater token.
+    """
+    username : str = Field(DNS_UPDATER_USERNAME, Literal=True)
+    scopes: list[str]
+
+async def validate_dns_updater_token(security_scopes: SecurityScopes, token: Annotated[str, Depends(oauth2_scheme)]):
+    """
+    Figure out if the incoming token is a valid dns_updater scope.
+    """
+
+    # Some setup of vars.
+    if security_scopes.scopes:
+        authenticate_value = f'Bearer scope="{security_scopes.scope_str}"'
+    else:
+        authenticate_value = "Bearer"
+
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+    try:
+        # Check the jwt for basic stuff.
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+
+        # Retrieve the subject/user out.
+        subject: str = payload.get("sub")
+        if subject is None:
+            raise credentials_exception
+
+        # Retrieve the scopes out.
+        token_scopes = payload.get("scopes", [])
+
+        # Finally we create a class of TokenData which allows strict checking and whatnot.
+        # From here on, we refer to the model and not the variables.
+        token_data = TokenData(scopes=token_scopes, username=subject)
+
+    except (JWTError, ValidationError):
+        raise credentials_exception
+
+    # We are looking for a specific scope.
+    if REQUEST_DNS_TOKEN_SCOPE not in token_data.scopes:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not enough permissions",
+            headers={"WWW-Authenticate": authenticate_value}
+        )
+
+    # We get here it means the scope is found. We need to construct a model and return it back.
+    dns_updater = DnsUpdater(scopes=token_data.scopes)
+
+    return dns_updater
+
+
 async def get_current_user(security_scopes: SecurityScopes, token: Annotated[str, Depends(oauth2_scheme)]):
     """
     Figures out if the current token is valid. If so, return a UserInDB object.
@@ -220,13 +282,6 @@ async def get_current_active_user(
     return current_user
 
 
-class TokenRequest(BaseModel):
-    """
-    TODO
-    """
-    host: str
-
-
 @app.get("/")
 async def get_root():
     """
@@ -271,17 +326,27 @@ async def get_own_items(current_user: Annotated[User, Security(get_current_activ
     return [{"item_id": "Foo", "owner": current_user.username}]
 
 
-# In use: www-urlencoded. Commented is data/json version.
+class Hostname(BaseModel):
+    hostname : str
+
+
+# Depends/Security uses ww-urlencoded, Body uses json.
+# TODO: Figure out why scoopes=[] isn't working as I think.
 @app.post("/dns/token", response_model=Token)
-async def get_dns_token(request: Annotated[TokenRequest, Depends()], current_user: Annotated[User, Security(get_current_active_user, scopes=["request-dns-token"])]):
-#async def get_dns_token(request: TokenRequest, current_user: Annotated[User, Security(get_current_active_user, scopes=["request-dns-token"])]):
+async def get_dns_token(hostname: Annotated[Hostname, Depends()], dns_updater: Annotated[DnsUpdater, Security(validate_dns_updater_token, scopes=["request-dns-tokena"])]):
+#async def get_dns_token(hostname: Annotated[Hostname, Depends()], dns_updater: Annotated[DnsUpdater, Depends(validate_dns_updater_token)]):
+#async def get_dns_token(hostname: Annotated[Hostname, Body()], dns_updater: Annotated[DnsUpdater, Depends(validate_dns_updater_token)]):
     """
     Given a valid incoming token, provide a token back that allows updating
     the DNS record for the specified host.
     """
+
+    print(hostname)
+    # TODO: Validate hostname is proper format.
+
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
-        data={"sub": "dns-updater", "scopes": [f"dns-updater:{request.host}"]}, expires_delta=access_token_expires
+        data={"sub": dns_updater.username, "scopes": [f"{DNS_UPDATER_SCOPE_NAME}:{hostname}"]}, expires_delta=access_token_expires
     )
 
     return {"access_token": access_token, "token_type": "bearer"}

@@ -40,3 +40,15 @@ The bulk of this code follows the FastAPI guide and modified where need be.
   --> Take jwt and request a new update-record token
   --> update-record token is then placed into VM
   --> On launch of new VM, use jwt to update dns record
+
+DnsUpdaterToken
+
+/dns/token --> Check incoming token
+
+
+This example, as long as you pass `Authorization: Bearer` with nothing/anything, it will pass. Something that Depends(oauth2_scheme) is the "root" function that does all the heavy lifting of validing the token for expiration. Maybe even first pass of scope check.
+
+```
+@app.post("/dns/token")
+async def get_dns_token(request: Annotated[TokenRequest, Depends()], token: Annotated[str, Depends(oauth2_scheme)] ):❮
+```
