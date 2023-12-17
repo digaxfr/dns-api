@@ -26,10 +26,23 @@ SECRET_KEY = "09d25e094faa6ca2556c818166b7a9563b93f7099f6f0f4caa6cf63b88e8d3e7"
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
+
 # Others
 DNS_UPDATER_SCOPE_NAME = "dns-updater"
 DNS_UPDATER_USERNAME = "dns-updater"
 REQUEST_DNS_TOKEN_SCOPE = "request-dns-token"
+
+# Different "categories" of scopes. Not sure if there is a better way to handle
+# this. Mainly used for checking the requested scope on login.
+scopes_user_pw = {
+    "me": "Read information about the current user.",
+    "request-dns-token": "Allows requesting a token for DNS updates.",
+}
+
+scopes_dns_updater = {
+    "dns-updater": "Allows updating DNS on the specified record name."   # How do I make this not selectable, but still within the schema? Does that even make any sense?
+}
+
 
 # Configure Logging
 logging.basicConfig(
@@ -42,11 +55,7 @@ logging.basicConfig(
 app = FastAPI()
 oauth2_scheme = OAuth2PasswordBearer(
     tokenUrl="token",
-    scopes={
-        "me": "Read information about the current user.",
-        "request-dns-token": "Allows requesting a token for DNS updates.",
-        "dns-updater": "Allows updating DNS on the specified record name."   # How do I make this not selectable, but still within the schema? Does that even make any sense?
-    }
+    scopes=dict(scopes_user_pw, **scopes_dns_updater)
 )
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -193,13 +202,14 @@ async def validate_dns_updater_token(security_scopes: SecurityScopes, token: Ann
     except (JWTError, ValidationError):
         raise credentials_exception
 
-    # We are looking for a specific scope.
-    if REQUEST_DNS_TOKEN_SCOPE not in token_data.scopes:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Not enough permissions",
-            headers={"WWW-Authenticate": authenticate_value}
-        )
+    # Verify we have the relelvant scopes.
+    for scope in security_scopes.scopes:
+        if scope not in token_data.scopes:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Not enough permissions",
+                headers={"WWW-Authenticate": authenticate_value},
+            )
 
     # We get here it means the scope is found. We need to construct a model and return it back.
     dns_updater = DnsUpdater(scopes=token_data.scopes)
@@ -305,6 +315,15 @@ async def login_for_access_token(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    # Check for only valid scopes for login with user/pass.
+    # Dump attributes
+    # for attribute in vars(form_data):
+    #     print(attribute, getattr(form_data, attribute))
+    for scope in form_data.scopes:
+        if scope not in scopes_user_pw:
+            print(f"Incorrect scope detected: {scope}")
+            return {"access_token": "", "token_type": "invalid"}
+
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
         data={"sub": user.username, "scopes": form_data.scopes}, expires_delta=access_token_expires
@@ -316,6 +335,7 @@ async def login_for_access_token(
 @app.get("/users/me")
 async def get_users_me(current_user: Annotated[User, Depends(get_current_active_user)]):
     """
+    Left here as part of the tutorial.
     Return data about ourself.
     """
     return current_user
@@ -323,6 +343,9 @@ async def get_users_me(current_user: Annotated[User, Depends(get_current_active_
 
 @app.get("/users/me/items/")
 async def get_own_items(current_user: Annotated[User, Security(get_current_active_user, scopes=["request-dns-token"])]):
+    """
+    Left here as part of the tutorial.
+    """
     return [{"item_id": "Foo", "owner": current_user.username}]
 
 
@@ -331,22 +354,23 @@ class Hostname(BaseModel):
 
 
 # Depends/Security uses ww-urlencoded, Body uses json.
-# TODO: Figure out why scoopes=[] isn't working as I think.
 @app.post("/dns/token", response_model=Token)
-async def get_dns_token(hostname: Annotated[Hostname, Depends()], dns_updater: Annotated[DnsUpdater, Security(validate_dns_updater_token, scopes=["request-dns-tokena"])]):
+async def get_dns_token(
+    hostname: Annotated[Hostname, Depends()],
+    dns_updater: Annotated[DnsUpdater,
+    Security(validate_dns_updater_token, scopes=["request-dns-token"])]
+):
 #async def get_dns_token(hostname: Annotated[Hostname, Depends()], dns_updater: Annotated[DnsUpdater, Depends(validate_dns_updater_token)]):
 #async def get_dns_token(hostname: Annotated[Hostname, Body()], dns_updater: Annotated[DnsUpdater, Depends(validate_dns_updater_token)]):
     """
     Given a valid incoming token, provide a token back that allows updating
     the DNS record for the specified host.
     """
-
-    print(hostname)
     # TODO: Validate hostname is proper format.
 
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
-        data={"sub": dns_updater.username, "scopes": [f"{DNS_UPDATER_SCOPE_NAME}:{hostname}"]}, expires_delta=access_token_expires
+        data={"sub": dns_updater.username, "scopes": [f"{DNS_UPDATER_SCOPE_NAME}:{hostname.hostname}"]}, expires_delta=access_token_expires
     )
 
     return {"access_token": access_token, "token_type": "bearer"}
