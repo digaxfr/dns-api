@@ -5,7 +5,7 @@ Fill me in later.
 
 import logging
 import os
-import uuid
+import re
 
 from datetime import datetime, timedelta
 from typing import Annotated
@@ -159,9 +159,9 @@ def create_access_token(data: dict, expires_delta: timedelta | None = None):
     return encoded_jwt
 
 
-class DnsUpdater(BaseModel):
+class DnsUpdaterToken(BaseModel):
     """
-    This model describes a DnsUpdater token.
+    This model describes a DnsUpdaterToken token.
     """
     username : str = Field(DNS_UPDATER_USERNAME, Literal=True)
     scopes: list[str]
@@ -203,8 +203,28 @@ async def validate_dns_updater_token(security_scopes: SecurityScopes, token: Ann
         raise credentials_exception
 
     # Verify we have the relelvant scopes.
+    # Iterate over the list of required scopes.
     for scope in security_scopes.scopes:
-        if scope not in token_data.scopes:
+        # Edge case: dns-updater:* scopes
+        if scope.startswith(f"{DNS_UPDATER_SCOPE_NAME}:"):
+            # Now iterate over the list of token's scopes
+            dns_updater_scope_found = False
+            for token_scope in token_data.scopes:
+                # DEBUG
+                print(token_scope)
+                if token_scope.startswith(f"{DNS_UPDATER_SCOPE_NAME}:"):
+                    dns_updater_scope_found = True
+
+            # If we do not find a proper dns updater scope, raise an error.
+            if not dns_updater_scope_found:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Not enough permissions",
+                    headers={"WWW-Authenticate": authenticate_value}
+                )
+
+        # Check if the current iteration exists in the token's list of scopes.
+        elif scope not in token_data.scopes:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Not enough permissions",
@@ -212,7 +232,7 @@ async def validate_dns_updater_token(security_scopes: SecurityScopes, token: Ann
             )
 
     # We get here it means the scope is found. We need to construct a model and return it back.
-    dns_updater = DnsUpdater(scopes=token_data.scopes)
+    dns_updater = DnsUpdaterToken(scopes=token_data.scopes)
 
     return dns_updater
 
@@ -243,25 +263,6 @@ async def get_current_user(security_scopes: SecurityScopes, token: Annotated[str
 
     except (JWTError, ValidationError):
         raise credentials_exception
-
-    # TODO: If user is dns-updater, go down a different flow.
-    if token_data.username == "dns-updater":
-        print(token_data.scopes)
-        dns_updater_scope_found = False
-        for scope in token_data.scopes:
-            if "dns-updater:" in scope:
-                dns_updater_scope_found = True
-                break
-
-        if dns_updater_scope_found:
-            # Super duper cheap hack. Let's fix it in the future with a proper class/model.
-            return UserInDB(username="dns-updater", hashed_password="doesnotexist")
-        else:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Not enough permissions (dns-updater)",
-                headers={"WWW-Authenticate": authenticate_value}
-            )
 
     user = get_user(fake_users_db, username=token_data.username)
 
@@ -357,11 +358,11 @@ class Hostname(BaseModel):
 @app.post("/dns/token", response_model=Token)
 async def get_dns_token(
     hostname: Annotated[Hostname, Depends()],
-    dns_updater: Annotated[DnsUpdater,
+    token: Annotated[DnsUpdaterToken,
     Security(validate_dns_updater_token, scopes=["request-dns-token"])]
 ):
-#async def get_dns_token(hostname: Annotated[Hostname, Depends()], dns_updater: Annotated[DnsUpdater, Depends(validate_dns_updater_token)]):
-#async def get_dns_token(hostname: Annotated[Hostname, Body()], dns_updater: Annotated[DnsUpdater, Depends(validate_dns_updater_token)]):
+#async def get_dns_token(hostname: Annotated[Hostname, Depends()], token: Annotated[DnsUpdaterToken, Depends(validate_dns_updater_token)]):
+#async def get_dns_token(hostname: Annotated[Hostname, Body()], token: Annotated[DnsUpdaterToken, Depends(validate_dns_updater_token)]):
     """
     Given a valid incoming token, provide a token back that allows updating
     the DNS record for the specified host.
@@ -370,7 +371,7 @@ async def get_dns_token(
 
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
-        data={"sub": dns_updater.username, "scopes": [f"{DNS_UPDATER_SCOPE_NAME}:{hostname.hostname}"]}, expires_delta=access_token_expires
+        data={"sub": token.username, "scopes": [f"{DNS_UPDATER_SCOPE_NAME}:{hostname.hostname}"]}, expires_delta=access_token_expires
     )
 
     return {"access_token": access_token, "token_type": "bearer"}
@@ -378,11 +379,13 @@ async def get_dns_token(
 
 # TODO: We should not use get_current_active_user. We should make our own flow. Cheap hack for now because it is getting late and I want to see this somewhat work.
 @app.put("/dns/update")
-async def put_dns_record(ipv6: str, current_token: Annotated[str, Security(get_current_active_user, scopes=["hi"])]):
+async def put_dns_record(ipv6: str, current_token: Annotated[str, Security(validate_dns_updater_token, scopes=["dns-updater:"])]):
     print(ipv6)
     print(current_token)
     CF_TOKEN = os.environ.get("CF_TOKEN")
     CF_ZONE_ID = os.environ.get("CF_ZONE_ID")
+
+    return
 
     cf_endpoint = f"https://api.cloudflare.com/client/v4/zones/{CF_ZONE_ID}/dns_records"
 
