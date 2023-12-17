@@ -210,10 +210,14 @@ async def validate_dns_updater_token(security_scopes: SecurityScopes, token: Ann
             # Now iterate over the list of token's scopes
             dns_updater_scope_found = False
             for token_scope in token_data.scopes:
-                # DEBUG
-                print(token_scope)
                 if token_scope.startswith(f"{DNS_UPDATER_SCOPE_NAME}:"):
-                    dns_updater_scope_found = True
+                    # This is probably bad practice, but I am being lazy.
+                    # While we are here, let us check the subject value is
+                    # what it should be.
+                    # This whole thing should also probably be a separate
+                    # function, but... lazy.
+                    if subject == DNS_UPDATER_USERNAME:
+                        dns_updater_scope_found = True
 
             # If we do not find a proper dns updater scope, raise an error.
             if not dns_updater_scope_found:
@@ -377,15 +381,27 @@ async def get_dns_token(
     return {"access_token": access_token, "token_type": "bearer"}
 
 
-# TODO: We should not use get_current_active_user. We should make our own flow. Cheap hack for now because it is getting late and I want to see this somewhat work.
 @app.put("/dns/update")
-async def put_dns_record(ipv6: str, current_token: Annotated[str, Security(validate_dns_updater_token, scopes=["dns-updater:"])]):
-    print(ipv6)
-    print(current_token)
+async def put_dns_record(
+    ipv6: str,
+    token: Annotated[
+        DnsUpdaterToken,
+        Security(validate_dns_updater_token, scopes=["dns-updater:"])
+    ]):
+    """
+    Make the update to CloudFlare.
+    """
+
+    # Check to see if CF vars are cset up.
+    if ("CF_TOKEN" not in os.environ
+        or "CF_ZONE_ID" not in os.environ):
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="CF configuration incorrect",
+        )
+
     CF_TOKEN = os.environ.get("CF_TOKEN")
     CF_ZONE_ID = os.environ.get("CF_ZONE_ID")
-
-    return
 
     cf_endpoint = f"https://api.cloudflare.com/client/v4/zones/{CF_ZONE_ID}/dns_records"
 
@@ -394,28 +410,71 @@ async def put_dns_record(ipv6: str, current_token: Annotated[str, Security(valid
         "Content-Type": "application/json"
     }
 
-    new_record_data = {
-        "content": "fd73:6172:6168:a10::1",
-        "name": "stinky2.my.tld",
+    # Extract the hostname from the scope.
+    token_data = DnsUpdaterToken(username=token.username, scopes=token.scopes)
+
+    # Validate scopes. Lazy approach for now.
+    # - List length is 1
+    # - Must start with dns-updater:
+    scope_found = False
+    if len(token_data.scopes) == 1:
+        if token_data.scopes[0].startswith(f"{DNS_UPDATER_SCOPE_NAME}:"):
+            scope_found = True
+
+    if not scope_found:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="invalid scope"
+        )
+
+    hostname = token_data.scopes[0].split(":")[1]
+
+    record_data = {
+        "content": ipv6,
+        "name": hostname,
         "proxied": False,
         "type": "AAAA",
         "comment": "dns-api",
         "ttl": 120
     }
 
-    response = requests.post(cf_endpoint, json=new_record_data, headers=headers)
+    # First we need to figure out if the record exists already
+    current_record_response = requests.get(f"{cf_endpoint}?name={hostname}&type=AAAA", headers=headers)
+    current_record = current_record_response.json()
 
-    print(response.content)
-
-    if response.status_code == 201:
-        print("Worked")
+    # There should be a result key and it should be 1 (since we will not
+    # account for the use case of multiple IPs returned for a record.
+    # Maybe in the future for funsies.
+    if len(current_record["result"]) == 0:
+        create_record_response = requests.post(cf_endpoint, json=record_data, headers=headers)
+        if create_record_response.status_code == 200:
+            return {
+                "status": "success",
+                "message": "Created record"
+            }
+        else:
+            return {
+                "status": "error",
+                "message": "Failed to create record"
+            }
+    elif len(current_record["result"]) == 1:
+        record_id = current_record["result"][0]["id"]
+        update_record_response = requests.put(f"{cf_endpoint}/{record_id}", json=record_data, headers=headers)
+        if update_record_response.status_code == 200:
+            return {
+                "status": "success",
+                "message": "Updated record"
+            }
+        else:
+            return {
+                "status": "error",
+                "message": "Failed to update record"
+            }
     else:
-        print("Fart")
-
-    # We have to also perform a check if it exist already, because then it is a PUT.
-    # For tomorrow...
-
-    return "Hi"
+        return {
+            "status": "error",
+            "message": "More than 1 result returned; doing nothing"
+        }
 
 
 # Tests

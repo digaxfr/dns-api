@@ -7,6 +7,8 @@ The bulk of this code follows the FastAPI guide and modified where need be.
 * Dynamically updating DNS when a new host comes online.
 * The host should only be able to update a specific record, not everything.
 * The token is expected to only be used once per generation (or have a short lifetime).
+* This will not cover the use case of having multiple IPs returned for a given
+  record.
 
 ## Goals
 
@@ -41,7 +43,7 @@ The bulk of this code follows the FastAPI guide and modified where need be.
   --> update-record token is then placed into VM
   --> On launch of new VM, use jwt to update dns record
 
-DnsUpdaterToken
+dNsUpdaterToken
 
 /dns/token --> Check incoming token
 
