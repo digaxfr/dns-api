@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-Fill me in later.
+DNS API
 """
 
 import logging
 import os
-import re
+import sqlite3
 
 from datetime import datetime, timedelta
 from typing import Annotated
@@ -20,17 +20,17 @@ from pydantic import BaseModel, Field, ValidationError
 import requests
 
 
-# Crypt things. THese are all demo values.
 # openssl rand -hex 32
-SECRET_KEY = "09d25e094faa6ca2556c818166b7a9563b93f7099f6f0f4caa6cf63b88e8d3e7"
+SECRET_KEY = os.environ.get("DNS_API_SECRET_KEY")
+if SECRET_KEY == None:
+    raise Exception("DNS_API_SECRET_KEY needs to be defined.")
+
+ACCESS_TOKEN_EXPIRE_MINUTES = 5
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
-
-
-# Others
 DNS_UPDATER_SCOPE_NAME = "dns-updater"
 DNS_UPDATER_USERNAME = "dns-updater"
 REQUEST_DNS_TOKEN_SCOPE = "request-dns-token"
+SQLITE_DB_NAME = "dns-api.db"
 
 # Different "categories" of scopes. Not sure if there is a better way to handle
 # this. Mainly used for checking the requested scope on login.
@@ -40,7 +40,7 @@ scopes_user_pw = {
 }
 
 scopes_dns_updater = {
-    "dns-updater": "Allows updating DNS on the specified record name."   # How do I make this not selectable, but still within the schema? Does that even make any sense?
+    "dns-updater": "Allows updating DNS on the specified record name."
 }
 
 
@@ -58,22 +58,6 @@ oauth2_scheme = OAuth2PasswordBearer(
     scopes=dict(scopes_user_pw, **scopes_dns_updater)
 )
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
-
-# Fake/Mock values
-mock_db = {}
-fake_users_db = {
-    "admin": {
-        "username": "admin",
-        "hashed_password": "$2b$12$EixZaYVK1fsbw1ZfbX3OXePaWxn96p36WQoeG6Lruj3vjPGga31lW",
-        "disabled": False
-    },
-    "fired-admin": {
-        "username": "fired-admin",
-        "hashed_password": "fakehashedsecret2",
-        "disabled": True
-    }
-}
 
 
 class Token(BaseModel):
@@ -104,14 +88,14 @@ class UserInDB(User):
     """
     Child model that describes a User that exists in the databsae.
     """
-    hashed_password: str
+    password_hash: str
 
 
-def verify_password(plain_password, hashed_password):
+def verify_password(plain_password, password_hash):
     """
     Verify the incoming password matches the stored hashed password.
     """
-    return pwd_context.verify(plain_password, hashed_password)
+    return pwd_context.verify(plain_password, password_hash)
 
 
 def get_password_hash(password):
@@ -121,26 +105,35 @@ def get_password_hash(password):
     return pwd_context.hash(password)
 
 
-def get_user(db, username: str):
+def get_user(username: str):
     """
     Discover if the user exists in the DB. If so, we return a UserInDB type
     that will have the hashed password in addition to the usual attributes.
 
     Note that this only works for Fake/MockDB at the moment.
     """
-    if username in db:
-        user_dict = db[username]
-        return UserInDB(**user_dict)
+    # Connect to sqlite db
+    con = sqlite3.connect(SQLITE_DB_NAME)
+    cur = con.cursor()
+    res = cur.execute(f"SELECT username,password_hash,disabled FROM users WHERE username == '{username}'")
+    rows = res.fetchall()
+    con.close()
+    if len(rows) == 1:
+        return UserInDB(
+            username = username,
+            password_hash = rows[0][1],
+            disabled = rows[0][2],
+        )
 
 
-def authenticate_user(fake_db, username: str, password: str):
+def authenticate_user(username: str, password: str):
     """
     Authentication flow for a user.
     """
-    user = get_user(fake_db, username)
+    user = get_user(username)
     if not user:
         return False
-    if not verify_password(password, user.hashed_password):
+    if not verify_password(password, user.password_hash):
         return False
     return user
 
@@ -312,7 +305,7 @@ async def login_for_access_token(
     """
     Endpoint to login with username/password and obtain a JWT.
     """
-    user = authenticate_user(fake_users_db, form_data.username, form_data.password)
+    user = authenticate_user(form_data.username, form_data.password)
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
