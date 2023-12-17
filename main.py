@@ -10,7 +10,7 @@ import sqlite3
 from datetime import datetime, timedelta
 from typing import Annotated
 
-from fastapi import Body, Depends, FastAPI, HTTPException, Security, status
+from fastapi import Depends, FastAPI, HTTPException, Security, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm, SecurityScopes
 from fastapi.testclient import TestClient
 from jose import JWTError, jwt
@@ -22,7 +22,8 @@ import requests
 
 # openssl rand -hex 32
 SECRET_KEY = os.environ.get("DNS_API_SECRET_KEY")
-if SECRET_KEY == None:
+if SECRET_KEY is None:
+    # pylint: disable=W0719
     raise Exception("DNS_API_SECRET_KEY needs to be defined.")
 
 ACCESS_TOKEN_EXPIRE_MINUTES = 5
@@ -115,7 +116,8 @@ def get_user(username: str):
     # Connect to sqlite db
     con = sqlite3.connect(SQLITE_DB_NAME)
     cur = con.cursor()
-    res = cur.execute(f"SELECT username,password_hash,disabled FROM users WHERE username == '{username}'")
+    res = cur.execute(f"SELECT username,password_hash,disabled \
+        FROM users WHERE username == '{username}'")
     rows = res.fetchall()
     con.close()
     if len(rows) == 1:
@@ -124,6 +126,7 @@ def get_user(username: str):
             password_hash = rows[0][1],
             disabled = rows[0][2],
         )
+    return False
 
 
 def authenticate_user(username: str, password: str):
@@ -133,6 +136,7 @@ def authenticate_user(username: str, password: str):
     user = get_user(username)
     if not user:
         return False
+    # pylint: disable=E1101
     if not verify_password(password, user.password_hash):
         return False
     return user
@@ -159,7 +163,9 @@ class DnsUpdaterToken(BaseModel):
     username : str = Field(DNS_UPDATER_USERNAME, Literal=True)
     scopes: list[str]
 
-async def validate_dns_updater_token(security_scopes: SecurityScopes, token: Annotated[str, Depends(oauth2_scheme)]):
+async def validate_dns_updater_token(
+    security_scopes: SecurityScopes,
+    token: Annotated[str, Depends(oauth2_scheme)]):
     """
     Figure out if the incoming token is a valid dns_updater scope.
     """
@@ -192,8 +198,8 @@ async def validate_dns_updater_token(security_scopes: SecurityScopes, token: Ann
         # From here on, we refer to the model and not the variables.
         token_data = TokenData(scopes=token_scopes, username=subject)
 
-    except (JWTError, ValidationError):
-        raise credentials_exception
+    except (JWTError, ValidationError) as exc:
+        raise credentials_exception from exc
 
     # Verify we have the relelvant scopes.
     # Iterate over the list of required scopes.
@@ -234,7 +240,9 @@ async def validate_dns_updater_token(security_scopes: SecurityScopes, token: Ann
     return dns_updater
 
 
-async def get_current_user(security_scopes: SecurityScopes, token: Annotated[str, Depends(oauth2_scheme)]):
+async def get_current_user(
+    security_scopes: SecurityScopes,
+    token: Annotated[str, Depends(oauth2_scheme)]):
     """
     Figures out if the current token is valid. If so, return a UserInDB object.
     """
@@ -258,10 +266,10 @@ async def get_current_user(security_scopes: SecurityScopes, token: Annotated[str
         token_scopes = payload.get("scopes", [])
         token_data = TokenData(scopes=token_scopes, username=username)
 
-    except (JWTError, ValidationError):
-        raise credentials_exception
+    except (JWTError, ValidationError) as exc:
+        raise credentials_exception from exc
 
-    user = get_user(fake_users_db, username=token_data.username)
+    user = get_user(username=token_data.username)
 
     if user is None:
         raise credentials_exception
@@ -319,11 +327,15 @@ async def login_for_access_token(
     #     print(attribute, getattr(form_data, attribute))
     for scope in form_data.scopes:
         if scope not in scopes_user_pw:
-            print(f"Incorrect scope detected: {scope}")
-            return {"access_token": "", "token_type": "invalid"}
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Incorrect scope detected: {scope}",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
 
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
+        # pylint: disable=E1101
         data={"sub": user.username, "scopes": form_data.scopes}, expires_delta=access_token_expires
     )
 
@@ -340,7 +352,11 @@ async def get_users_me(current_user: Annotated[User, Depends(get_current_active_
 
 
 @app.get("/users/me/items/")
-async def get_own_items(current_user: Annotated[User, Security(get_current_active_user, scopes=["request-dns-token"])]):
+async def get_own_items(
+    current_user: Annotated[User, Security(
+        get_current_active_user,
+        scopes=["request-dns-token"])
+    ]):
     """
     Left here as part of the tutorial.
     """
@@ -348,27 +364,32 @@ async def get_own_items(current_user: Annotated[User, Security(get_current_activ
 
 
 class Hostname(BaseModel):
+    """
+    Hostname model.
+    """
     hostname : str
 
 
-# Depends/Security uses ww-urlencoded, Body uses json.
 @app.post("/dns/token", response_model=Token)
 async def get_dns_token(
     hostname: Annotated[Hostname, Depends()],
     token: Annotated[DnsUpdaterToken,
     Security(validate_dns_updater_token, scopes=["request-dns-token"])]
 ):
-#async def get_dns_token(hostname: Annotated[Hostname, Depends()], token: Annotated[DnsUpdaterToken, Depends(validate_dns_updater_token)]):
-#async def get_dns_token(hostname: Annotated[Hostname, Body()], token: Annotated[DnsUpdaterToken, Depends(validate_dns_updater_token)]):
     """
     Given a valid incoming token, provide a token back that allows updating
     the DNS record for the specified host.
     """
+
+    # pylint: disable=W0511
     # TODO: Validate hostname is proper format.
 
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
-        data={"sub": token.username, "scopes": [f"{DNS_UPDATER_SCOPE_NAME}:{hostname.hostname}"]}, expires_delta=access_token_expires
+        data={
+            "sub": token.username,
+            "scopes": [f"{DNS_UPDATER_SCOPE_NAME}:{hostname.hostname}"]},
+            expires_delta=access_token_expires
     )
 
     return {"access_token": access_token, "token_type": "bearer"}
@@ -393,13 +414,13 @@ async def put_dns_record(
             detail="CF configuration incorrect",
         )
 
-    CF_TOKEN = os.environ.get("CF_TOKEN")
-    CF_ZONE_ID = os.environ.get("CF_ZONE_ID")
+    cf_token = os.environ.get("CF_TOKEN")
+    cf_zone_id = os.environ.get("CF_ZONE_ID")
 
-    cf_endpoint = f"https://api.cloudflare.com/client/v4/zones/{CF_ZONE_ID}/dns_records"
+    cf_endpoint = f"https://api.cloudflare.com/client/v4/zones/{cf_zone_id}/dns_records"
 
     headers = {
-        "Authorization": f"Bearer {CF_TOKEN}",
+        "Authorization": f"Bearer {cf_token}",
         "Content-Type": "application/json"
     }
 
@@ -432,42 +453,57 @@ async def put_dns_record(
     }
 
     # First we need to figure out if the record exists already
-    current_record_response = requests.get(f"{cf_endpoint}?name={hostname}&type=AAAA", headers=headers)
+    current_record_response = requests.get(
+        f"{cf_endpoint}?name={hostname}&type=AAAA",
+        headers=headers,
+        timeout=30
+    )
     current_record = current_record_response.json()
 
     # There should be a result key and it should be 1 (since we will not
     # account for the use case of multiple IPs returned for a record.
     # Maybe in the future for funsies.
     if len(current_record["result"]) == 0:
-        create_record_response = requests.post(cf_endpoint, json=record_data, headers=headers)
+        create_record_response = requests.post(
+            cf_endpoint,
+            json=record_data,
+            headers=headers,
+            timeout=30
+        )
         if create_record_response.status_code == 200:
             return {
                 "status": "success",
                 "message": "Created record"
             }
-        else:
-            return {
-                "status": "error",
-                "message": "Failed to create record"
-            }
-    elif len(current_record["result"]) == 1:
+
+        return {
+            "status": "error",
+            "message": "Failed to create record"
+        }
+
+    if len(current_record["result"]) == 1:
         record_id = current_record["result"][0]["id"]
-        update_record_response = requests.put(f"{cf_endpoint}/{record_id}", json=record_data, headers=headers)
+        update_record_response = requests.put(
+            f"{cf_endpoint}/{record_id}",
+            json=record_data,
+            headers=headers,
+            timeout=30
+        )
         if update_record_response.status_code == 200:
             return {
                 "status": "success",
                 "message": "Updated record"
             }
-        else:
-            return {
-                "status": "error",
-                "message": "Failed to update record"
-            }
-    else:
+
         return {
             "status": "error",
-            "message": "More than 1 result returned; doing nothing"
+            "message": "Failed to update record"
         }
+
+    return {
+        "status": "error",
+        "message": "More than 1 result returned; doing nothing"
+    }
 
 
 # Tests
