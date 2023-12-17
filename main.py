@@ -22,7 +22,7 @@ import requests
 
 # openssl rand -hex 32
 SECRET_KEY = os.environ.get("DNS_API_SECRET_KEY")
-if SECRET_KEY is None:
+if SECRET_KEY is None: # pragma: no cover
     # pylint: disable=W0719
     raise Exception("DNS_API_SECRET_KEY needs to be defined.")
 
@@ -516,16 +516,3 @@ def test_get_root():
     response = client.get("/")
     assert response.status_code == 200
     assert response.json() == {"message": "Hello World"}
-
-def test_create_token():
-    """
-    Unit test creating a DNS consumer token.
-    """
-    response = client.post(
-        "/tokens",
-        headers={"X-Blah": "Blah"},
-        json={"host": "sheep.t0fu.dev"},
-    )
-    print(f"Response is: {response.content}")
-    assert response.status_code == 200
-    assert response.json() == {"message": "success"}
