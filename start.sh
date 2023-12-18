@@ -10,7 +10,7 @@ if [ -z "${CF_TOKEN}" ]; then
   echo "CF_TOKEN needs to be set."
 fi
 
-if [ -z "${CF_ZONE_ID}"]; then
+if [ -z "${CF_ZONE_ID}" ]; then
   echo "CF_ZONE_ID needs to be set."
 fi
 
