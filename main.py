@@ -10,7 +10,7 @@ import sqlite3
 from datetime import datetime, timedelta
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, HTTPException, Security, status
+from fastapi import Depends, FastAPI, HTTPException, Request, Security, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm, SecurityScopes
 from fastapi.testclient import TestClient
 from jose import JWTError, jwt
@@ -26,7 +26,7 @@ if SECRET_KEY is None: # pragma: no cover
     # pylint: disable=W0719
     raise Exception("DNS_API_SECRET_KEY needs to be defined.")
 
-ACCESS_TOKEN_EXPIRE_MINUTES = 5
+ACCESS_TOKEN_EXPIRE_MINUTES = 10
 ALGORITHM = "HS256"
 DNS_UPDATER_SCOPE_NAME = "dns-updater"
 DNS_UPDATER_USERNAME = "dns-updater"
@@ -299,11 +299,11 @@ async def get_current_active_user(
 
 
 @app.get("/")
-async def get_root():
+async def get_root(request: Request):
     """
     Root route.
     """
-    return {"message": "Hello World"}
+    return {"message": f"Hello {request.client.host}"}
 
 
 @app.post("/token", response_model=Token)
@@ -397,11 +397,12 @@ async def get_dns_token(
 
 @app.put("/dns/update")
 async def put_dns_record(
-    ipv6: str,
     token: Annotated[
         DnsUpdaterToken,
-        Security(validate_dns_updater_token, scopes=["dns-updater:"])
-    ]):
+        Security(validate_dns_updater_token, scopes=["dns-updater:"])],
+    request: Request,
+    ipv6: str | None = None,
+    ):
     """
     Make the update to CloudFlare.
     """
@@ -441,10 +442,18 @@ async def put_dns_record(
             detail="invalid scope"
         )
 
+    # Figure out hostname
     hostname = token_data.scopes[0].split(":")[1]
 
+    # Figure out IPv6
+    content = ""
+    if ipv6 is None or ipv6 == "":
+        content = request.client.host
+    else:
+        content = ipv6
+
     record_data = {
-        "content": ipv6,
+        "content": content,
         "name": hostname,
         "proxied": False,
         "type": "AAAA",
