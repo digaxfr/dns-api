@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 
+. .secrets.env
+
 if [ -z "${DNS_API_SECRET_KEY}" ]; then
   echo "DNS_API_SECRET_KEY needs to be set."
   echo "Generate a key with 'openssl rand -hex 32'"

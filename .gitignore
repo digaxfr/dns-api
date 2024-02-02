@@ -3,5 +3,6 @@
 *.log
 *.swp
 *~
+.secrets.env
 __pycache__
 donotcommit
