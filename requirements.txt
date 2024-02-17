@@ -6,4 +6,5 @@ pylint
 pytest
 python-jose[cryptography]
 python-multipart
+requests
 uvicorn[standard]

@@ -2,6 +2,10 @@
 
 . .secrets.env
 
+export CF_TOKEN
+export CF_ZONE_ID
+export DNS_API_SECRET_KEY
+
 if [ -z "${DNS_API_SECRET_KEY}" ]; then
   echo "DNS_API_SECRET_KEY needs to be set."
   echo "Generate a key with 'openssl rand -hex 32'"
